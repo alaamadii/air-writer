@@ -1,0 +1,15 @@
+# Application Configuration
+
+# Camera settings
+CAMERA_INDEX = 0
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
+
+# Drawing settings
+DEFAULT_BRUSH_COLOR = (0, 0, 255)  # Red in BGR format
+DEFAULT_BRUSH_THICKNESS = 8
+ERASER_THICKNESS = 40
+
+# MediaPipe settings
+MIN_DETECTION_CONFIDENCE = 0.7
+MIN_TRACKING_CONFIDENCE = 0.7
