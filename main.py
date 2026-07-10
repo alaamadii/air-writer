@@ -9,6 +9,12 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
 
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open camera index {config.CAMERA_INDEX}. "
+            "Check camera permissions or update CAMERA_INDEX in config.py."
+        )
+
     # Initialize Hand Tracker
     tracker = HandTracker()
 

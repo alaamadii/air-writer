@@ -1,12 +1,20 @@
 import cv2
 import mediapipe as mp
+from pathlib import Path
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import config
 
 class HandTracker:
     def __init__(self):
-        base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
+        model_path = Path(__file__).resolve().with_name("hand_landmarker.task")
+        if not model_path.is_file():
+            raise FileNotFoundError(
+                f"MediaPipe model not found at {model_path}. "
+                "Make sure hand_landmarker.task is included with the project."
+            )
+
+        base_options = python.BaseOptions(model_asset_path=str(model_path))
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
             num_hands=1,
