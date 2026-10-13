@@ -2,9 +2,54 @@
 
 [![CI](https://github.com/alaamadii/air-writer/actions/workflows/ci.yml/badge.svg)](https://github.com/alaamadii/air-writer/actions/workflows/ci.yml)
 
-Air Writer turns hand gestures into drawing actions on a virtual OpenCV canvas. It uses
-MediaPipe Hand Landmarker, geometry-based finger states, adaptive fingertip smoothing, and
-timestamp-based gesture stabilization. Camera frames stay local and are not saved by default.
+Air Writer turns hand gestures into drawing actions in the browser or on a desktop OpenCV
+canvas. It uses MediaPipe Hand Landmarker, geometry-based finger states, adaptive fingertip
+smoothing, and timestamp-based gesture stabilization. Camera frames stay local and are not
+uploaded or saved by default.
+
+## Choose Your Version
+
+| Version | Best for | Start command |
+| --- | --- | --- |
+| **Web (recommended)** | Vercel, phones, tablets, and sharing by URL | `npm run dev` |
+| **Python desktop** | Local OpenCV development and hardware tuning | `python main.py` |
+
+The web application is a static Vite site. MediaPipe inference runs in the visitor's browser,
+tries the GPU delegate first, and falls back to CPU when required. Vercel serves only the site
+assets and never receives camera frames. The existing `hand_landmarker.task` model is bundled
+into the production build, so the web and Python versions use the same model asset.
+
+## Run the Web App
+
+Requirements: Node.js 20.19+ and a modern browser.
+
+```bash
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite, press **تشغيل الكاميرا**, and allow camera access. Useful
+commands:
+
+```bash
+npm run test:web    # deterministic gesture, geometry, smoothing, and stroke tests
+npm run build       # production build in dist/
+npm run preview     # preview the production build locally
+```
+
+Camera access works on `localhost` during development and requires HTTPS in production. Vercel
+provides HTTPS automatically. See [Web and Vercel Deployment](docs/WEB_DEPLOYMENT.md) for the
+architecture, browser support, troubleshooting, and exact free deployment steps.
+
+## Web Features
+
+- Responsive Arabic interface for desktop and mobile browsers.
+- Local MediaPipe Hand Landmarker inference with GPU-first initialization and CPU fallback.
+- The same 3D finger geometry, timestamp stabilization, One Euro smoothing, clear hold, and
+  stroke-jump protection used by the desktop application.
+- Visible hand landmarks, six colors, three brush sizes, gesture dwell controls, clear, camera
+  stop, diagnostics, fullscreen mode, and local PNG export.
+- No API keys, database, backend, or paid Vercel feature is required.
 
 ## Gestures
 
@@ -99,7 +144,7 @@ age, callback latency, raw gesture, and stabilized gesture. These measurements a
 observations, not hardware-independent performance claims. Hand landmarks are visible by default
 and render above the canvas. Press `L` to hide or show them while the application is running.
 
-## Installation and Run
+## Python Desktop Installation and Run
 
 Requirements are Python 3.10+, a webcam, and a desktop environment with OpenCV window support.
 
@@ -136,6 +181,9 @@ ruff check .
 ruff format --check .
 python -m compileall -q -x "(\\.venv|venv)" .
 python -m unittest discover -s tests -v
+npm ci
+npm run test:web
+npm run build
 ```
 
 Tests cover gesture mapping, timestamp stabilization and stale gaps, CLEAR hold/latching,
@@ -167,6 +215,12 @@ items require the manual hardware procedure above and are not asserted by the un
 
 ```text
 air-writer/
+|-- index.html              # Browser UI and accessible controls
+|-- web/                    # Browser runtime, styling, pure logic, and JS tests
+|-- public/                 # Static browser assets
+|-- package.json            # Vite and MediaPipe web dependencies
+|-- vercel.json             # Production build and security/cache headers
+|-- docs/                   # Web architecture and deployment guide
 |-- main.py                 # Capture, timestamp consumption, canvas, and display
 |-- hand_tracker.py         # LIVE_STREAM detector and latest-result mailbox
 |-- hand_geometry.py        # Rotation-robust pure landmark geometry

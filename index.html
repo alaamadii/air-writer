@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Air Writer يحول حركة يدك إلى رسم مباشر في المتصفح باستخدام MediaPipe."
+    />
+    <meta name="theme-color" content="#080c14" />
+    <title>Air Writer — ارسم في الهواء</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Air Writer الرئيسية">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" role="img">
+              <path d="M11 33c7-2 7-17 15-17 5 0 2 12 7 12 3 0 4-5 5-9" />
+              <circle cx="11" cy="33" r="3" />
+            </svg>
+          </span>
+          <span><strong>Air Writer</strong><small>ارسم بإشارة يدك</small></span>
+        </a>
+        <div class="top-actions">
+          <span class="privacy-pill"><i></i> المعالجة على جهازك</span>
+          <button class="icon-button" id="fullscreenButton" type="button" title="ملء الشاشة">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+            </svg>
+            <span class="sr-only">ملء الشاشة</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="workspace" aria-label="مساحة الرسم">
+        <div class="camera-card">
+          <div class="camera-stage" id="cameraStage">
+            <video id="cameraVideo" autoplay muted playsinline></video>
+            <canvas id="drawingCanvas" aria-label="لوحة الرسم"></canvas>
+            <canvas id="overlayCanvas" aria-hidden="true"></canvas>
+
+            <div class="stage-status">
+              <span class="status-dot" id="statusDot"></span>
+              <span id="statusText">الكاميرا متوقفة</span>
+            </div>
+
+            <div class="mode-chip" id="modeChip" data-mode="idle">
+              <span>الوضع</span><strong id="modeText">انتظار</strong>
+            </div>
+
+            <div class="empty-state" id="emptyState">
+              <div class="hand-orbit" aria-hidden="true">
+                <svg viewBox="0 0 64 64">
+                  <path d="M23 29V16a4 4 0 0 1 8 0v11-16a4 4 0 0 1 8 0v16-12a4 4 0 0 1 8 0v17-8a4 4 0 0 1 8 0v14c0 12-8 20-20 20h-3c-7 0-11-3-15-8L8 39a5 5 0 0 1 8-6l7 7V29Z" />
+                </svg>
+              </div>
+              <p class="eyebrow">AIR WRITER</p>
+              <h1>حوّل الهواء إلى مساحة رسم</h1>
+              <p>اسمح للكاميرا، ارفع إصبعك، وابدأ الرسم فورًا. لا يتم رفع الفيديو أو حفظه.</p>
+              <button class="primary-button" id="startButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 10l4-2v8l-4-2v3H4V7h11v3Z" />
+                </svg>
+                تشغيل الكاميرا
+              </button>
+              <p class="support-note" id="supportNote">يعمل على Chrome وEdge وSafari الحديثة</p>
+            </div>
+
+            <div class="control-dock" id="controlDock" aria-label="أدوات الرسم">
+              <div class="tool-group color-tools" role="group" aria-label="لون القلم">
+                <span class="tool-label">اللون</span>
+                <button class="color-swatch is-selected" style="--swatch: #ff4d5f" data-air-action="color" data-value="#ff4d5f" type="button" aria-label="أحمر"></button>
+                <button class="color-swatch" style="--swatch: #4d8dff" data-air-action="color" data-value="#4d8dff" type="button" aria-label="أزرق"></button>
+                <button class="color-swatch" style="--swatch: #37d99b" data-air-action="color" data-value="#37d99b" type="button" aria-label="أخضر"></button>
+                <button class="color-swatch" style="--swatch: #ffd84d" data-air-action="color" data-value="#ffd84d" type="button" aria-label="أصفر"></button>
+                <button class="color-swatch" style="--swatch: #a978ff" data-air-action="color" data-value="#a978ff" type="button" aria-label="بنفسجي"></button>
+                <button class="color-swatch light-swatch" style="--swatch: #ffffff" data-air-action="color" data-value="#ffffff" type="button" aria-label="أبيض"></button>
+              </div>
+              <span class="dock-divider"></span>
+              <div class="tool-group size-tools" role="group" aria-label="حجم القلم">
+                <span class="tool-label">الحجم</span>
+                <button data-air-action="size" data-value="4" type="button" aria-label="قلم رفيع"><i style="--dot-size: 4px"></i></button>
+                <button class="is-selected" data-air-action="size" data-value="8" type="button" aria-label="قلم متوسط"><i style="--dot-size: 8px"></i></button>
+                <button data-air-action="size" data-value="14" type="button" aria-label="قلم عريض"><i style="--dot-size: 14px"></i></button>
+              </div>
+              <span class="dock-divider"></span>
+              <button class="clear-button" data-air-action="clear" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-9 8 7-7 8H8l-4-4v-2Zm5 6h11" /></svg>
+                مسح الكل
+              </button>
+            </div>
+
+            <div class="diagnostics" id="diagnostics" hidden></div>
+            <div class="toast" id="toast" role="status" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <aside class="side-panel">
+          <section class="panel-section live-panel">
+            <div>
+              <p class="eyebrow">LIVE GESTURES</p>
+              <h2>إشارات بسيطة، نتيجة مباشرة</h2>
+            </div>
+            <div class="gesture-list">
+              <article><span class="gesture-icon">☝</span><div><strong>الرسم</strong><p>ارفع السبابة فقط</p></div><kbd>DRAW</kbd></article>
+              <article><span class="gesture-icon">✌</span><div><strong>التحريك</strong><p>السبابة والوسطى</p></div><kbd>MOVE</kbd></article>
+              <article><span class="gesture-icon three">3</span><div><strong>الممحاة</strong><p>ارفع ثلاثة أصابع</p></div><kbd>ERASE</kbd></article>
+              <article><span class="gesture-icon">✋</span><div><strong>مسح الكل</strong><p>افتح كفك 0.6 ثانية</p></div><kbd>CLEAR</kbd></article>
+            </div>
+          </section>
+
+          <section class="panel-section session-panel">
+            <div class="panel-heading"><h2>الجلسة</h2><span id="engineBadge">MediaPipe</span></div>
+            <div class="session-actions">
+              <button id="saveButton" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 21h14" /></svg>
+                حفظ صورة
+              </button>
+              <button id="landmarksButton" type="button" aria-pressed="true" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="18" r="2"/><circle cx="9" cy="10" r="2"/><circle cx="13" cy="5" r="2"/><circle cx="17" cy="11" r="2"/><path d="m7 16 2-4 3-5 4 3" /></svg>
+                نقاط اليد
+              </button>
+              <button id="diagnosticsButton" type="button" aria-pressed="false" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3" /></svg>
+                الأداء
+              </button>
+              <button id="stopButton" class="danger-action" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+                إيقاف
+              </button>
+            </div>
+          </section>
+
+          <p class="privacy-copy">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 5 3 8 7 10 4-2 7-5 7-10V6l-7-3Z" /></svg>
+            الفيديو ومعالم اليد تبقى داخل متصفحك. لا يوجد رفع للكاميرا إلى أي خادم.
+          </p>
+        </aside>
+      </section>
+    </main>
+    <noscript>يجب تفعيل JavaScript لتشغيل Air Writer.</noscript>
+    <script type="module" src="/web/app.js"></script>
+  </body>
+</html>
