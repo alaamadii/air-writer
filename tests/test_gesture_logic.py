@@ -16,6 +16,7 @@ class GestureLogicTests(unittest.TestCase):
 
     def test_clear_mode_has_priority(self):
         self.assertEqual(classify_gesture([1, 1, 1, 1, 1]), GestureMode.CLEAR)
+        self.assertEqual(classify_gesture([0, 1, 1, 1, 1]), GestureMode.CLEAR)
 
     def test_idle_for_unrecognized_or_invalid_state(self):
         self.assertEqual(classify_gesture([0, 0, 0, 0, 0]), GestureMode.IDLE)

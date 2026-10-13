@@ -1,189 +1,165 @@
-# Air Writer — Real-Time Hand Gesture Drawing
+# Air Writer - Real-Time Hand Gesture Drawing
 
 [![CI](https://github.com/alaamadii/air-writer/actions/workflows/ci.yml/badge.svg)](https://github.com/alaamadii/air-writer/actions/workflows/ci.yml)
 
-Air Writer is a real-time Computer Vision application that turns hand gestures into drawing actions on a virtual canvas. It uses MediaPipe Hand Landmarker to detect hand landmarks from a webcam feed, derives finger states, classifies gestures into application modes, and renders drawing, movement, erasing, and canvas-clearing interactions with OpenCV.
+Air Writer turns hand gestures into drawing actions on a virtual OpenCV canvas. It uses
+MediaPipe Hand Landmarker, geometry-based finger states, adaptive fingertip smoothing, and
+timestamp-based gesture stabilization. Camera frames stay local and are not saved by default.
 
-**Portfolio focus:** Computer Vision · gesture recognition · real-time interaction · testable application logic · CI
+## Gestures
 
-## Engineering Highlights
+| Finger state | Mode | Behavior |
+| --- | --- | --- |
+| Index | `DRAW` | Draw with the index fingertip |
+| Index + middle | `MOVE` | Move without changing the canvas |
+| Index + middle + ring | `ERASE` | Erase under the index fingertip |
+| Open palm held for about 600 ms | `CLEAR` | Clear once, then require release before another clear |
+| Anything else or no fresh hand | `IDLE` | No canvas change |
 
-- Uses MediaPipe Tasks / Hand Landmarker for local real-time hand detection.
-- Extracts the index-finger tip as the virtual pen position.
-- Derives five-finger up/down state with handedness-aware thumb logic.
-- Separates gesture classification from camera/rendering code so gesture behavior can be unit tested without a webcam.
-- Supports explicit `DRAW`, `MOVE`, `ERASE`, `CLEAR`, and `IDLE` modes.
-- Keeps drawing state on a separate NumPy canvas and composites it over the live camera frame.
-- Handles camera startup failures explicitly and releases both camera and MediaPipe resources on exit.
-- Runs linting, formatting checks, source compilation, and deterministic unit tests in GitHub Actions.
+Keyboard shortcuts: `C` clears the canvas, `L` toggles hand landmarks, `D` toggles
+diagnostics, and `Q` quits.
 
-## Vision-to-Drawing Pipeline
+## Tracking Architecture
 
-```mermaid
-flowchart LR
-    A[Webcam Frame] --> B[MediaPipe Hand Landmarker]
-    B --> C[21 Hand Landmarks]
-    C --> D[Finger State + Index Tip]
-    D --> E[Gesture Classifier]
-    E --> F{Mode}
-    F -->|DRAW| G[Draw Stroke]
-    F -->|MOVE| H[Move Cursor Only]
-    F -->|ERASE| I[Erase Stroke]
-    F -->|CLEAR| J[Reset Canvas]
-    F -->|IDLE| K[No Drawing Action]
-    G --> L[Canvas Composite]
-    H --> L
-    I --> L
-    J --> L
-    K --> L
-    L --> M[OpenCV Display]
+The tracker runs MediaPipe in `LIVE_STREAM` mode. The camera/render loop mirrors each frame
+exactly once, makes a smaller RGB inference copy, and calls `detect_async()` with a strictly
+increasing timestamp from `time.monotonic_ns()`. MediaPipe's video-mode graph manages its own
+hand ROI and may drop input frames when inference is busy; this is expected and lets capture and
+display continue without blocking.
+
+The callback performs no OpenCV rendering. It publishes only the newest completed result and its
+timestamp through a lock-protected, one-item mailbox, so there is no application frame backlog.
+The main thread reads a safe snapshot. It updates smoothing and gesture state only once for each
+new result timestamp. Results older than `MAX_RESULT_AGE_MS` (200 ms by default) are unavailable,
+which resets fingertip, gesture, and stroke continuity state.
+
+Capture and display default to 1280x720. Inference defaults to a same-aspect-ratio 960x540 copy.
+Normalized MediaPipe landmarks are mapped directly back to the full display dimensions. Change
+`INFERENCE_WIDTH` and `INFERENCE_HEIGHT` together; 960x540 is a useful manual comparison when a
+hand is often far from the camera.
+
+## Stability and Gesture Geometry
+
+Finger extension uses MCP/PIP/DIP/TIP joint angles and palm-normalized distances rather than
+screen-axis comparisons. MediaPipe 3D world landmarks are preferred; normalized landmarks are a
+validated fallback. This makes the rules insensitive to handedness and substantially less
+sensitive to in-plane hand rotation.
+
+The index tip passes through a timestamp-aware One Euro filter. Its defaults favor steady slow
+movement while raising the cutoff during fast movement to avoid obvious lag:
+
+- `SMOOTHING_MIN_CUTOFF = 2.0`: raise for less smoothing and lower for steadier slow motion.
+- `SMOOTHING_BETA = 5.0`: raise for quicker response to fast movement. This value is scaled for
+  normalized image coordinates rather than pixel coordinates.
+- `SMOOTHING_DERIVATIVE_CUTOFF = 1.0`: smooths the speed estimate.
+- `SMOOTHING_MAX_GAP_MS = 250`: reinitialize after a long gap instead of bridging it.
+
+The filter also resets after hand loss, stale tracking, or reacquisition. `DRAW`, `MOVE`, and
+`ERASE` must remain consistent for `GESTURE_STABILIZATION_MS` (50 ms). A short
+`GESTURE_RELEASE_GRACE_MS` (100 ms) absorbs an isolated missing detection. `CLEAR` requires a
+continuous `CLEAR_HOLD_MS` (600 ms) open-palm hold, fires only once per hold, and must be released
+or changed before it can fire again. Timers use only new MediaPipe result timestamps; display
+frames and stale results cannot advance them.
+
+Stroke continuity is explicit. Entering `DRAW` or `ERASE` starts at the current point, while
+`MOVE`, `IDLE`, `CLEAR`, hand loss, stale tracking, and transitions between draw and erase reset
+the previous point. A jump larger than `MAX_STROKE_JUMP_PIXELS` restarts the stroke instead of
+drawing a long accidental line.
+
+## Confidence Settings
+
+MediaPipe's confidence controls represent different decisions and are configured separately:
+
+- `MIN_HAND_DETECTION_CONFIDENCE = 0.5`: confidence required to start a hand detection.
+- `MIN_HAND_PRESENCE_CONFIDENCE = 0.5`: confidence that the tracked region still contains a hand.
+- `MIN_TRACKING_CONFIDENCE = 0.5`: confidence in landmark tracking between detections.
+
+Lower values can retain marginal hands but admit more false positives. Higher values reject more
+uncertain results and may cause more reacquisition. Tune them independently for the target camera,
+lighting, distance, and background.
+
+## Diagnostics and Rendering
+
+Set `SHOW_DIAGNOSTICS = True` to show rolling display FPS, completed-result FPS, latest result
+age, callback latency, raw gesture, and stabilized gesture. These measurements are runtime
+observations, not hardware-independent performance claims. Hand landmarks are visible by default
+and render above the canvas. Press `L` to hide or show them while the application is running.
+
+## Installation and Run
+
+Requirements are Python 3.10+, a webcam, and a desktop environment with OpenCV window support.
+
+```bash
+python -m venv .venv
 ```
 
-## Implemented Gestures
+Activate it on Windows:
 
-| Gesture state | Application mode | Behavior |
-| --- | --- | --- |
-| Index up, middle down | Draw | Draws a continuous stroke using the index fingertip |
-| Index + middle up, ring down | Move | Moves the cursor without drawing |
-| Index + middle + ring up, pinky down | Erase | Erases along the index-finger path |
-| All five fingers up | Clear | Clears the complete drawing canvas |
-| Anything else / invalid state | Idle | No drawing action |
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
-Keyboard shortcuts:
+Or on macOS/Linux:
 
-- `C` — clear the canvas
-- `Q` — quit
+```bash
+source .venv/bin/activate
+```
 
-## Tech Stack
+Then install and run:
 
-- Python 3.10+
-- OpenCV
-- MediaPipe Tasks / Hand Landmarker
-- NumPy
-- Python `unittest`
-- Ruff
-- GitHub Actions
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
+```
+
+## Automated Verification
+
+The deterministic suite does not open a webcam:
+
+```bash
+ruff check .
+ruff format --check .
+python -m compileall -q -x "(\\.venv|venv)" .
+python -m unittest discover -s tests -v
+```
+
+Tests cover gesture mapping, timestamp stabilization and stale gaps, CLEAR hold/latching,
+One Euro filtering and reset behavior, landmark geometry and rotated synthetic poses, invalid
+inputs, and stroke transitions/jump rejection.
+
+## Manual Webcam Verification
+
+1. Start with the default 960x540 inference size and press `D` to show diagnostics.
+2. Run `python main.py`; confirm the preview is mirrored naturally and the cursor stays directly
+   under the displayed index fingertip (no second mirror or coordinate offset).
+3. Draw slowly and quickly. Check that slow jitter is reduced without an obvious fast-motion lag.
+4. Switch repeatedly among `DRAW`, `MOVE`, and `ERASE`. Confirm no connecting line appears at a
+   transition, after removing/reintroducing the hand, or after moving the hand a large distance.
+5. Briefly hide a finger or hand and confirm an isolated miss does not cause rapid mode flicker;
+   keep the hand absent beyond 200 ms and confirm drawing continuity resets.
+6. Rotate and tilt both left and right hands while testing every gesture.
+7. Hold an open palm: the canvas should clear only after roughly 600 ms and only once until the
+   palm changes or closes.
+8. Observe display FPS, result FPS, result age, and callback latency under the target lighting and
+   workload. Compare 960x540 with 640x360 only if the result FPS is too low.
+9. Press `D` or `L` to turn diagnostics or landmark drawing off when desired.
+
+Webcam accuracy, throughput, latency, and the best confidence/smoothing values remain dependent on
+the actual camera, CPU/GPU delegate, lighting, background, hand distance, and user motion. Those
+items require the manual hardware procedure above and are not asserted by the unit tests.
 
 ## Project Structure
 
 ```text
 air-writer/
-├── main.py                     # Camera loop, canvas updates, and display
-├── hand_tracker.py             # MediaPipe detection and finger-state extraction
-├── gesture_logic.py            # Pure gesture classification logic
-├── config.py                   # Camera, brush, eraser, and confidence settings
-├── hand_landmarker.task        # MediaPipe hand-landmark model asset
-├── requirements.txt
-├── pyproject.toml              # Ruff configuration
-├── tests/
-│   └── test_gesture_logic.py   # Deterministic gesture-mode tests
-└── .github/workflows/ci.yml    # Automated quality checks
+|-- main.py                 # Capture, timestamp consumption, canvas, and display
+|-- hand_tracker.py         # LIVE_STREAM detector and latest-result mailbox
+|-- hand_geometry.py        # Rotation-robust pure landmark geometry
+|-- gesture_logic.py        # Gesture mapping and temporal state machine
+|-- smoothing.py            # Pure timestamp-aware One Euro filter
+|-- stroke.py               # Pure drawing continuity state
+|-- config.py               # Runtime and tuning settings
+|-- hand_landmarker.task    # MediaPipe model asset
+`-- tests/                  # Deterministic unit tests
 ```
-
-## Getting Started
-
-### Requirements
-
-- Python 3.10 or newer
-- A working webcam
-- Desktop environment with OpenCV window support
-
-### Installation
-
-```bash
-git clone https://github.com/alaamadii/air-writer.git
-cd air-writer
-python -m venv .venv
-```
-
-Activate the environment:
-
-```powershell
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
-```
-
-```bash
-# macOS / Linux
-source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### Run
-
-```bash
-python main.py
-```
-
-Allow camera access if your operating system asks for permission.
-
-## How Gesture Recognition Works
-
-`HandTracker` runs MediaPipe Hand Landmarker on each frame. The application uses landmark 8 as the index-finger tip and determines whether each finger is raised. The thumb uses handedness-aware horizontal landmark comparison, while the index, middle, ring, and pinky use vertical tip-to-joint comparisons.
-
-The resulting five-value finger state is passed to `classify_gesture()`, which is intentionally independent from OpenCV and MediaPipe. This keeps the interaction rules simple to reason about and allows the gesture mapping to be tested in CI without requiring a physical webcam.
-
-## Drawing Model
-
-The application maintains a NumPy canvas with the same dimensions as the camera frame. Drawing and erasing modify this canvas rather than the camera image directly. Each frame then combines the live video with the non-black pixels of the canvas to produce the displayed result.
-
-The previous fingertip position is reset when no valid hand is detected, preventing a long accidental line when tracking resumes at a different location.
-
-## Configuration
-
-`config.py` exposes the main runtime parameters:
-
-- Camera index
-- Capture width and height
-- Brush color and thickness
-- Eraser thickness
-- MediaPipe detection confidence
-- MediaPipe hand-presence / tracking confidence
-
-OpenCV colors use BGR ordering rather than RGB.
-
-## Automated Quality Checks
-
-GitHub Actions validates the repository on pushes and pull requests with:
-
-```bash
-ruff check .
-ruff format --check .
-python -m compileall -q .
-python -m unittest discover -s tests -v
-```
-
-The current tests focus on deterministic gesture classification: draw, move, erase, clear, idle, and invalid finger-state inputs. Camera and physical hand-tracking behavior are not suitable for deterministic CI without recorded-media fixtures or hardware-in-the-loop testing.
-
-## Privacy
-
-Camera frames are processed locally by this application. The project does not upload webcam frames or save them by default.
-
-## Current Limitations
-
-- Recognition quality depends on lighting, camera angle, hand visibility, and MediaPipe confidence.
-- Finger-state rules are heuristic rather than a trained custom gesture classifier.
-- The current application tracks one hand.
-- There is no motion smoothing, undo/redo, saved drawing history, OCR, or virtual toolbar.
-- Automated tests validate deterministic interaction logic but do not validate physical webcam behavior.
-
-These are explicit scope limits rather than claimed production features.
-
-## Possible Future Improvements
-
-- Motion smoothing for steadier strokes
-- Recorded-video tests for the vision pipeline
-- Configurable brush colors and sizes in the UI
-- Undo/redo and image export
-- Multi-hand interaction
-- Optional handwriting/OCR experiments
-
-## Author
-
-**Alaa Madi** — Software Engineering / Machine Learning & Computer Vision
