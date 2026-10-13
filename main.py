@@ -10,6 +10,7 @@ from gesture_logic import GestureMode, GestureStateMachine, classify_gesture
 from hand_tracker import HandTracker, TrackerDiagnostics, monotonic_ms
 from smoothing import PointOneEuroFilter
 from stroke import StrokeController
+from toolbar import DrawingToolbar, ToolbarAction
 
 
 class RollingFrameRate:
@@ -34,34 +35,54 @@ def _pixel_point(point: tuple[float, float], width: int, height: int) -> tuple[i
     return x, y
 
 
-def _draw_cursor(frame: np.ndarray, point: tuple[int, int], mode: GestureMode) -> None:
+def _capture_mouse_click(
+    event: int,
+    x: int,
+    y: int,
+    _flags: int,
+    clicks: deque[tuple[int, int]],
+) -> None:
+    if event == cv2.EVENT_LBUTTONDOWN:
+        clicks.append((x, y))
+
+
+def _draw_cursor(
+    frame: np.ndarray,
+    point: tuple[int, int],
+    mode: GestureMode,
+    brush_color: tuple[int, int, int],
+    brush_thickness: int,
+    eraser_thickness: int,
+) -> None:
     if mode == GestureMode.DRAW:
-        cv2.circle(frame, point, 10, config.DEFAULT_BRUSH_COLOR, cv2.FILLED)
+        radius = max(7, brush_thickness // 2 + 4)
+        cv2.circle(frame, point, radius, brush_color, cv2.FILLED, cv2.LINE_AA)
+        cv2.circle(frame, point, radius + 2, (255, 255, 255), 1, cv2.LINE_AA)
     elif mode == GestureMode.MOVE:
         cv2.circle(frame, point, 10, (255, 0, 0), cv2.FILLED)
     elif mode == GestureMode.ERASE:
-        cv2.circle(frame, point, 20, (255, 255, 255), 2)
+        cv2.circle(frame, point, eraser_thickness // 2, (255, 255, 255), 2, cv2.LINE_AA)
 
 
 def _apply_canvas_segment(
     canvas: np.ndarray,
     mode: GestureMode,
     segment: tuple[tuple[int, int], tuple[int, int]] | None,
+    brush_color: tuple[int, int, int] | None = None,
+    brush_thickness: int | None = None,
+    eraser_thickness: int | None = None,
 ) -> None:
     """Apply one draw/erase segment to the persistent canvas."""
     if segment is None:
         return
+    brush_color = config.DEFAULT_BRUSH_COLOR if brush_color is None else brush_color
+    brush_thickness = config.DEFAULT_BRUSH_THICKNESS if brush_thickness is None else brush_thickness
+    eraser_thickness = config.ERASER_THICKNESS if eraser_thickness is None else eraser_thickness
     start, end = segment
     if mode == GestureMode.DRAW:
-        cv2.line(
-            canvas,
-            start,
-            end,
-            config.DEFAULT_BRUSH_COLOR,
-            config.DEFAULT_BRUSH_THICKNESS,
-        )
+        cv2.line(canvas, start, end, brush_color, brush_thickness, cv2.LINE_AA)
     elif mode == GestureMode.ERASE:
-        cv2.line(canvas, start, end, (0, 0, 0), config.ERASER_THICKNESS)
+        cv2.line(canvas, start, end, (0, 0, 0), eraser_thickness, cv2.LINE_AA)
 
 
 def _draw_diagnostics(
@@ -83,7 +104,7 @@ def _draw_diagnostics(
         f"Gesture: {raw_mode.value} -> {stable_mode.value}",
     )
     for index, line in enumerate(lines):
-        y = 25 + index * 23
+        y = config.TOOLBAR_HEIGHT + 25 + index * 23
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3)
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
@@ -115,7 +136,14 @@ def main() -> None:
         max_gap_ms=config.GESTURE_MAX_GAP_MS,
     )
     strokes = StrokeController(config.MAX_STROKE_JUMP_PIXELS)
+    toolbar = DrawingToolbar(
+        default_color=config.DEFAULT_BRUSH_COLOR,
+        default_brush_size=config.DEFAULT_BRUSH_THICKNESS,
+        height=config.TOOLBAR_HEIGHT,
+        dwell_ms=config.TOOLBAR_DWELL_MS,
+    )
     display_rate = RollingFrameRate(config.METRICS_WINDOW_MS)
+    mouse_clicks: deque[tuple[int, int]] = deque()
     last_result_timestamp_ms: int | None = None
     hand_visible = False
     result_was_fresh = False
@@ -132,11 +160,15 @@ def main() -> None:
     print("- Hold open palm: clear")
     print("- L: show/hide hand landmarks")
     print("- D: show/hide diagnostics")
+    print("- Toolbar: use the MOVE gesture or mouse to select")
     print("- C: clear canvas")
     print("- Q: quit")
 
     try:
         tracker = HandTracker()
+        window_name = "Air Writing"
+        cv2.namedWindow(window_name)
+        cv2.setMouseCallback(window_name, _capture_mouse_click, mouse_clicks)
         while True:
             success, frame = cap.read()
             if not success:
@@ -164,6 +196,7 @@ def main() -> None:
                     current_point = None
                     raw_mode = GestureMode.IDLE
                     stable_mode = GestureMode.IDLE
+                    toolbar.reset_hover()
                 result_was_fresh = False
             else:
                 result_was_fresh = True
@@ -177,6 +210,7 @@ def main() -> None:
                         current_point = None
                         raw_mode = GestureMode.IDLE
                         stable_mode = gestures.update(raw_mode, snapshot.timestamp_ms).mode
+                        toolbar.reset_hover()
                     else:
                         if not hand_visible:
                             smoother.reset()
@@ -186,17 +220,44 @@ def main() -> None:
                         raw_mode = classify_gesture(tracker.get_fingers_up(snapshot))
                         gesture_update = gestures.update(raw_mode, snapshot.timestamp_ms)
                         stable_mode = gesture_update.mode
+                        toolbar_action = toolbar.update_pointer(
+                            current_point,
+                            selecting=stable_mode == GestureMode.MOVE,
+                            timestamp_ms=snapshot.timestamp_ms,
+                            frame_width=width,
+                        )
 
                         if gesture_update.clear_triggered:
+                            canvas.fill(0)
+                            strokes.reset()
+                        elif toolbar_action == ToolbarAction.CLEAR:
                             canvas.fill(0)
                             strokes.reset()
                         elif raw_mode == GestureMode.CLEAR:
                             # Never continue an old stroke while an open-palm hold
                             # is waiting to reach the clear threshold.
                             strokes.reset()
+                        elif toolbar.contains(current_point):
+                            # Never paint under the controls or connect a stroke
+                            # across the toolbar boundary.
+                            strokes.reset()
                         else:
                             segment = strokes.update(stable_mode, current_point)
-                            _apply_canvas_segment(canvas, stable_mode, segment)
+                            _apply_canvas_segment(
+                                canvas,
+                                stable_mode,
+                                segment,
+                                brush_color=toolbar.selected_color,
+                                brush_thickness=toolbar.brush_thickness,
+                                eraser_thickness=config.ERASER_THICKNESS,
+                            )
+
+            while mouse_clicks:
+                toolbar_action = toolbar.activate(mouse_clicks.popleft(), width)
+                if toolbar_action == ToolbarAction.CLEAR:
+                    canvas.fill(0)
+                if toolbar_action is not None:
+                    strokes.reset()
 
             gray_canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(gray_canvas, 1, 255, cv2.THRESH_BINARY_INV)
@@ -206,7 +267,16 @@ def main() -> None:
             # Draw interaction overlays last so the canvas cannot cover them.
             tracker.draw_landmarks(final_frame, snapshot, enabled=show_landmarks)
             if current_point is not None and result_was_fresh:
-                _draw_cursor(final_frame, current_point, stable_mode)
+                _draw_cursor(
+                    final_frame,
+                    current_point,
+                    stable_mode,
+                    toolbar.selected_color,
+                    toolbar.brush_thickness,
+                    config.ERASER_THICKNESS,
+                )
+
+            toolbar.render(final_frame, stable_mode.value, now_ms)
 
             display_fps = display_rate.record(now_ms)
             if show_diagnostics:
@@ -218,7 +288,7 @@ def main() -> None:
                     stable_mode,
                 )
 
-            cv2.imshow("Air Writing", final_frame)
+            cv2.imshow(window_name, final_frame)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break

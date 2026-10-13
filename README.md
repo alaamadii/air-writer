@@ -19,6 +19,20 @@ timestamp-based gesture stabilization. Camera frames stay local and are not save
 Keyboard shortcuts: `C` clears the canvas, `L` toggles hand landmarks, `D` toggles
 diagnostics, and `Q` quits.
 
+## Drawing Toolbar
+
+The translucent toolbar at the top of the camera view provides:
+
+- Six drawing colors: red, blue, green, yellow, purple, and white.
+- Small, medium, and large brush sizes.
+- A `CLEAR` button.
+- A live mode indicator showing `DRAW`, `MOVE`, `ERASE`, `CLEAR`, or `IDLE`.
+
+Select a control with a normal mouse click, or hold the `MOVE` gesture (index and middle fingers)
+over it for about 450 ms. A yellow progress line shows the dwell selection. Drawing is blocked
+inside the toolbar and stroke continuity resets at its boundary, so using the controls cannot
+leave accidental marks. The selected color and brush size are outlined in white.
+
 ## Tracking Architecture
 
 The tracker runs MediaPipe in `LIVE_STREAM` mode. The camera/render loop mirrors each frame
@@ -159,6 +173,7 @@ air-writer/
 |-- gesture_logic.py        # Gesture mapping and temporal state machine
 |-- smoothing.py            # Pure timestamp-aware One Euro filter
 |-- stroke.py               # Pure drawing continuity state
+|-- toolbar.py              # Color/size controls, mouse and gesture selection
 |-- config.py               # Runtime and tuning settings
 |-- hand_landmarker.task    # MediaPipe model asset
 `-- tests/                  # Deterministic unit tests

@@ -7,6 +7,17 @@ from main import _apply_canvas_segment
 
 
 class CanvasActionTests(unittest.TestCase):
+    def test_draw_segment_uses_selected_color_and_thickness(self):
+        canvas = np.zeros((100, 100, 3), dtype=np.uint8)
+        _apply_canvas_segment(
+            canvas,
+            GestureMode.DRAW,
+            ((10, 50), (90, 50)),
+            brush_color=(255, 0, 0),
+            brush_thickness=4,
+        )
+        self.assertTrue(np.array_equal(canvas[50, 50], (255, 0, 0)))
+
     def test_erase_segment_removes_existing_drawing(self):
         canvas = np.zeros((200, 200, 3), dtype=np.uint8)
         _apply_canvas_segment(canvas, GestureMode.DRAW, ((20, 100), (180, 100)))

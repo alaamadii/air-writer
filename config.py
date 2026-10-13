@@ -15,6 +15,10 @@ DEFAULT_BRUSH_THICKNESS = 8
 ERASER_THICKNESS = 40
 MAX_STROKE_JUMP_PIXELS = 160
 
+# On-screen toolbar settings. Hold the MOVE gesture over a control to select it.
+TOOLBAR_HEIGHT = 112
+TOOLBAR_DWELL_MS = 450
+
 # MediaPipe settings
 # Detection starts a hand track, presence decides whether a track still contains
 # a hand, and tracking measures landmark continuity. They are distinct signals.
