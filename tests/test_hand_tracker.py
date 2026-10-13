@@ -11,10 +11,15 @@ from hand_tracker import HandTracker
 
 
 class HandTrackerTests(unittest.TestCase):
+    @patch("hand_tracker.mp.Image")
     @patch("hand_tracker.vision.HandLandmarker.create_from_options")
-    def test_live_stream_options_and_downscaled_async_submission(self, create_detector):
+    def test_live_stream_options_and_downscaled_async_submission(
+        self, create_detector, create_image
+    ):
         detector = MagicMock()
         create_detector.return_value = detector
+        media_image = object()
+        create_image.return_value = media_image
         tracker = HandTracker()
         options = create_detector.call_args.args[0]
 
@@ -24,14 +29,18 @@ class HandTrackerTests(unittest.TestCase):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         with patch("hand_tracker.monotonic_ms", return_value=100):
             self.assertEqual(tracker.process_frame(frame), 100)
+        image_data = create_image.call_args.kwargs["data"]
+        self.assertEqual(image_data.shape, (540, 960, 3))
         image, timestamp = detector.detect_async.call_args.args
-        self.assertEqual((image.width, image.height), (960, 540))
+        self.assertIs(image, media_image)
         self.assertEqual(timestamp, 100)
         tracker.close()
 
+    @patch("hand_tracker.mp.Image")
     @patch("hand_tracker.vision.HandLandmarker.create_from_options")
-    def test_submission_timestamps_are_strictly_increasing(self, create_detector):
+    def test_submission_timestamps_are_strictly_increasing(self, create_detector, create_image):
         create_detector.return_value = MagicMock()
+        create_image.return_value = object()
         tracker = HandTracker()
         frame = np.zeros((36, 64, 3), dtype=np.uint8)
         with patch("hand_tracker.monotonic_ms", return_value=500):
