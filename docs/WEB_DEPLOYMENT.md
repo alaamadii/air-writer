@@ -10,8 +10,8 @@ Python server. The browser is the correct runtime for a public camera applicatio
 
 1. `getUserMedia()` opens the camera after explicit user permission.
 2. MediaPipe Tasks Vision runs the Hand Landmarker locally through WebAssembly.
-3. The browser tries the GPU delegate first and falls back to CPU when GPU execution is not
-   available.
+3. A module Web Worker tries the GPU delegate first and falls back to CPU when GPU execution is
+   not available, keeping synchronous inference off the UI thread.
 4. Canvas renders the drawing, eraser, hand landmarks, and cursor at the camera resolution.
 5. Vercel serves static HTML, CSS, JavaScript, the model, and cache/security headers only.
 
@@ -21,22 +21,21 @@ latency while keeping the video private.
 ## Runtime Architecture
 
 ```text
-Camera (browser permission)
+Camera (1280x720 requested)
+        |
+        +-------------------------------> native-resolution preview/canvases
         |
         v
-HTMLVideoElement -- MediaPipe Hand Landmarker (VIDEO mode, GPU -> CPU fallback)
-        |                         |
-        |                         v
-        |              21 normalized + world landmarks
-        |                         |
-        |                         v
-        |              3D finger geometry / gestures
-        |                         |
-        |              One Euro filter / time stabilizer
-        |                         |
-        +-------------------------+-------------------+
-                                  v                   v
-                         persistent draw canvas   landmark overlay
+960x540 capture -> ImageBitmap -> module worker (one frame in flight, max 30 FPS)
+                                      |
+                                      v
+                         MediaPipe VIDEO mode (GPU -> CPU)
+                                      |
+                                      v
+                         normalized + world landmarks
+                                      |
+                                      v
+                    gestures / smoothing / drawing / overlay
 ```
 
 The web port keeps the desktop safeguards:
@@ -73,6 +72,12 @@ asset. The build also copies the package's WebAssembly runtime into `dist/mediap
 the deployed application has no runtime dependency on a third-party CDN. Both receive long-lived
 cache headers.
 
+The first uncached browser visit downloads roughly 8 MB for the hand model and 12-13 MB for the
+selected WebAssembly runtime. Loading starts after the page becomes idle, runs in the worker, and
+does not block the interface. If the user starts the camera before it completes, the page shows
+real download/initialization progress and waits up to 45 seconds before presenting a useful
+error. Subsequent visits normally use the browser/CDN cache.
+
 ## Free Vercel Deployment from GitHub
 
 Vercel's Hobby plan is free for personal, non-commercial projects. Air Writer is fully static,
@@ -94,6 +99,15 @@ so it does not consume server-function execution for hand tracking.
 Every later push to `main` creates a new production deployment. Pull requests receive preview
 deployments. HTTPS is automatic, which is required by browsers for production camera access.
 
+### Make the production URL public
+
+Vercel can protect generated deployment URLs with a login screen. A protected response prevents
+the browser worker from receiving the model/WASM files and therefore prevents hand tracking.
+Use the project's production domain (for example, the domain shown under **Domains**) rather than
+a generated deployment URL. In **Project Settings -> Deployment Protection**, keep the production
+domain public (Standard Protection or no protection, depending on the account options). Preview
+deployments may remain protected.
+
 ## Browser Use
 
 1. Open the HTTPS deployment.
@@ -113,12 +127,13 @@ the mirrored camera frame and current drawing. It is generated and downloaded lo
 
 ## Quality and Performance
 
-- The requested camera constraint is 1280×720 at an ideal 30 FPS (up to 60 when available).
+- The requested camera constraint is 1280x720 at an ideal/max 30 FPS.
 - MediaPipe video mode reuses tracking between detections instead of running palm detection for
   every frame.
-- The video and both canvas layers share the camera's native dimensions, avoiding coordinate
-  offsets and unnecessary image scaling.
-- Rendering uses `requestAnimationFrame`, and inference runs only when the video has a new frame.
+- The preview and canvas layers keep the camera dimensions. A 960x540 same-aspect copy is used
+  for inference, then normalized landmarks map directly back to the full canvas.
+- Synchronous MediaPipe work runs in a module worker. Rendering stays on `requestAnimationFrame`;
+  inference accepts only a new video frame, permits one request at a time, and is capped at 30 FPS.
 - The model and application chunks are fingerprinted and cached by Vercel's CDN.
 
 Performance still depends on the visitor's device, browser, camera, lighting, and GPU driver. A
@@ -147,11 +162,15 @@ Confirm the page uses `https://`. Browsers block production camera access on ins
 
 Check that the Vercel build completed, that `hand_landmarker.task` appears as a generated file
 under `dist/assets/`, and that `dist/mediapipe-wasm/` contains the `.js` and `.wasm` runtime files.
+Open the production domain rather than a generated deployment URL. If Vercel shows a login page,
+adjust **Project Settings -> Deployment Protection** so the production domain is public.
 
 ### Tracking is slow on an older device
 
 Close camera-heavy tabs and other video applications. Use current Chrome, Edge, or Safari. The
-diagnostics control shows inference FPS and whether `GPU` or `CPU` is active.
+diagnostics control shows inference FPS/time and whether `GPU` or `CPU` is active. A stable FPS
+below the 30 FPS ceiling is acceptable; the frame gate intentionally avoids a latency-building
+backlog.
 
 ### Mirroring or coordinates look wrong
 

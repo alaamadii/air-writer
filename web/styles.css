@@ -80,6 +80,11 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(77, 141, 255, 0.
 .primary-button:hover { filter: brightness(1.08); transform: translateY(-1px); }
 .primary-button:disabled { opacity: .65; cursor: wait; }
 .primary-button svg { width: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+.model-progress { width: min(260px, 80%); margin-top: 15px; }
+.model-progress[hidden] { display: none; }
+.model-progress > span { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.09); }
+.model-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4d8dff, #37d99b); box-shadow: 0 0 14px rgba(77,141,255,.35); transition: width .2s ease; }
+.model-progress small { display: block; margin-top: 7px; color: #8795a9; font-size: .68rem; }
 .support-note { margin: 14px 0 0; color: #67768b; font-size: .72rem; }
 
 .control-dock { position: absolute; z-index: 8; bottom: 17px; left: 50%; display: flex; align-items: center; gap: 10px; max-width: calc(100% - 30px); padding: 9px 11px; border: 1px solid rgba(255,255,255,.14); border-radius: 16px; background: rgba(10,15,24,.82); box-shadow: 0 15px 45px rgba(0,0,0,.34); backdrop-filter: blur(18px); transform: translateX(-50%) translateY(25px); opacity: 0; visibility: hidden; transition: .25s ease; }

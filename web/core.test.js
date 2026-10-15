@@ -5,6 +5,7 @@ import {
   GestureStateMachine,
   PointOneEuroFilter,
   StrokeController,
+  TrackerFrameGate,
   classifyGesture,
   fingerStates,
   jointAngle,
@@ -80,4 +81,16 @@ test("One Euro point smoothing follows movement and resets after a stale gap", (
   const smoothed = filter.filter([1, 1], 16);
   assert.ok(smoothed[0] > 0 && smoothed[0] < 1);
   assert.deepEqual(filter.filter([0.25, 0.5], 200), [0.25, 0.5]);
+});
+
+test("tracker frame gate caps inference and allows only one in-flight frame", () => {
+  const gate = new TrackerFrameGate(25);
+  assert.equal(gate.tryStart(0), true);
+  assert.equal(gate.tryStart(100), false);
+  gate.complete();
+  assert.equal(gate.tryStart(20), false);
+  assert.equal(gate.tryStart(40), true);
+  gate.complete();
+  gate.reset();
+  assert.equal(gate.tryStart(41), true);
 });

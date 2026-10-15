@@ -253,3 +253,27 @@ export class StrokeController {
   }
   reset() { this.mode = null; this.previous = null; }
 }
+
+export class TrackerFrameGate {
+  constructor(maxFps = 30) {
+    if (!Number.isFinite(maxFps) || maxFps <= 0) throw new Error("maxFps must be positive");
+    this.minimumIntervalMs = 1000 / maxFps;
+    this.reset();
+  }
+
+  tryStart(timestampMs) {
+    if (this.busy || timestampMs - this.lastStartedAt < this.minimumIntervalMs) return false;
+    this.busy = true;
+    this.lastStartedAt = timestampMs;
+    return true;
+  }
+
+  complete() {
+    this.busy = false;
+  }
+
+  reset() {
+    this.busy = false;
+    this.lastStartedAt = Number.NEGATIVE_INFINITY;
+  }
+}

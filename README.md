@@ -14,10 +14,11 @@ uploaded or saved by default.
 | **Web (recommended)** | Vercel, phones, tablets, and sharing by URL | `npm run dev` |
 | **Python desktop** | Local OpenCV development and hardware tuning | `python main.py` |
 
-The web application is a static Vite site. MediaPipe inference runs in the visitor's browser,
-tries the GPU delegate first, and falls back to CPU when required. Vercel serves only the site
-assets and never receives camera frames. The existing `hand_landmarker.task` model is bundled
-into the production build, so the web and Python versions use the same model asset.
+The web application is a static Vite site. MediaPipe inference runs in a dedicated browser
+worker, tries the GPU delegate first, and falls back to CPU when required. Keeping synchronous
+inference out of the UI thread prevents the page and camera controls from freezing. Vercel serves
+only the site assets and never receives camera frames. The existing `hand_landmarker.task` model
+is bundled into the production build, so the web and Python versions use the same model asset.
 
 ## Run the Web App
 
@@ -44,7 +45,10 @@ architecture, browser support, troubleshooting, and exact free deployment steps.
 ## Web Features
 
 - Responsive Arabic interface for desktop and mobile browsers.
-- Local MediaPipe Hand Landmarker inference with GPU-first initialization and CPU fallback.
+- Local MediaPipe Hand Landmarker inference in a Web Worker with GPU-first initialization and
+  CPU fallback.
+- Responsive startup progress, background model preloading, one in-flight inference at a time,
+  and a 30 FPS inference ceiling that prevents frame queues.
 - The same 3D finger geometry, timestamp stabilization, One Euro smoothing, clear hold, and
   stroke-jump protection used by the desktop application.
 - Visible hand landmarks, six colors, three brush sizes, gesture dwell controls, clear, camera
@@ -78,7 +82,21 @@ over it for about 450 ms. A yellow progress line shows the dwell selection. Draw
 inside the toolbar and stroke continuity resets at its boundary, so using the controls cannot
 leave accidental marks. The selected color and brush size are outlined in white.
 
-## Tracking Architecture
+## Web Tracking Architecture
+
+The browser displays the camera at its native requested resolution (normally 1280x720), while a
+same-aspect 960x540 copy is transferred to a module worker for inference. The worker runs the
+synchronous MediaPipe `VIDEO` API away from the UI thread and returns only landmarks. A frame
+gate permits at most one in-flight frame and caps submissions at 30 FPS, so slow devices drop
+work instead of building an increasingly stale queue. The model begins loading after the page
+becomes idle and a visible progress indicator is shown if startup is still in progress when the
+camera button is pressed.
+
+The first uncached visit downloads the hand model and WebAssembly runtime. Later visits reuse
+Vercel/browser caches. The diagnostics panel reports measured inference FPS and time, delegate,
+inference size, camera size, and cold-start time.
+
+## Python Desktop Tracking Architecture
 
 The tracker runs MediaPipe in `LIVE_STREAM` mode. The camera/render loop mirrors each frame
 exactly once, makes a smaller RGB inference copy, and calls `detect_async()` with a strictly
@@ -139,10 +157,14 @@ lighting, distance, and background.
 
 ## Diagnostics and Rendering
 
-Set `SHOW_DIAGNOSTICS = True` to show rolling display FPS, completed-result FPS, latest result
-age, callback latency, raw gesture, and stabilized gesture. These measurements are runtime
-observations, not hardware-independent performance claims. Hand landmarks are visible by default
-and render above the canvas. Press `L` to hide or show them while the application is running.
+For the web app, use the diagnostics button (or press `D`) to show inference FPS/time, active
+worker delegate, gesture state, camera and inference sizes, and cold-start time.
+
+For the Python app, set `SHOW_DIAGNOSTICS = True` to show rolling display FPS, completed-result
+FPS, latest result age, callback latency, raw gesture, and stabilized gesture. These measurements
+are runtime observations, not hardware-independent performance claims. Hand landmarks are visible
+by default and render above the canvas. Press `L` to hide or show them while the application is
+running.
 
 ## Python Desktop Installation and Run
 
@@ -216,7 +238,7 @@ items require the manual hardware procedure above and are not asserted by the un
 ```text
 air-writer/
 |-- index.html              # Browser UI and accessible controls
-|-- web/                    # Browser runtime, styling, pure logic, and JS tests
+|-- web/                    # Browser UI runtime, inference worker, pure logic, and JS tests
 |-- public/                 # Static browser assets
 |-- package.json            # Vite and MediaPipe web dependencies
 |-- vercel.json             # Production build and security/cache headers

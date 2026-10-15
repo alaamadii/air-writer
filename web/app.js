@@ -1,16 +1,17 @@
-import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 import "./styles.css";
 import {
   GestureMode,
   GestureStateMachine,
   PointOneEuroFilter,
   StrokeController,
+  TrackerFrameGate,
   classifyGesture,
   fingerStates,
 } from "./core.js";
 
-const WASM_ROOT = "/mediapipe-wasm";
-const MODEL_URL = new URL("../hand_landmarker.task", import.meta.url).href;
+const INFERENCE_WIDTH = 960;
+const INFERENCE_HEIGHT = 540;
+const TRACKER_TIMEOUT_MS = 45_000;
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
   [0, 5], [5, 6], [6, 7], [7, 8],
@@ -47,6 +48,9 @@ const ui = {
   diagnostics: document.querySelector("#diagnostics"),
   toast: document.querySelector("#toast"),
   supportNote: document.querySelector("#supportNote"),
+  modelProgress: document.querySelector("#modelProgress"),
+  modelProgressBar: document.querySelector("#modelProgressBar"),
+  modelProgressText: document.querySelector("#modelProgressText"),
 };
 
 const drawingContext = ui.drawingCanvas.getContext("2d");
@@ -54,9 +58,16 @@ const overlayContext = ui.overlayCanvas.getContext("2d");
 const gestures = new GestureStateMachine();
 const smoother = new PointOneEuroFilter();
 const strokes = new StrokeController(160);
+const frameGate = new TrackerFrameGate(30);
 const frameTimes = [];
+const captureCanvas = document.createElement("canvas");
+captureCanvas.width = INFERENCE_WIDTH;
+captureCanvas.height = INFERENCE_HEIGHT;
+const captureContext = captureCanvas.getContext("2d", { alpha: false, desynchronized: true });
 
-let landmarker = null;
+let trackerWorker = null;
+let trackerReadyPromise = null;
+let trackerReady = false;
 let stream = null;
 let animationFrame = null;
 let lastVideoTime = -1;
@@ -65,7 +76,13 @@ let brushSize = 8;
 let showLandmarks = true;
 let showDiagnostics = false;
 let running = false;
-let delegate = "GPU";
+let delegate = "--";
+let trackerInitializationMs = null;
+let latestInferenceMs = null;
+let trackerProgress = 0;
+let trackerProgressLabel = "بدء التحميل…";
+let trackingSessionId = 0;
+let cameraStartPending = false;
 let dwellTarget = null;
 let dwellStartedAt = 0;
 let dwellLatched = false;
@@ -94,29 +111,106 @@ function setControlsEnabled(enabled) {
   }
 }
 
-async function createLandmarker() {
-  if (landmarker) return landmarker;
-  const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-  const options = {
-    baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-    runningMode: "VIDEO",
-    numHands: 1,
-    minHandDetectionConfidence: 0.5,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
-  };
-  try {
-    landmarker = await HandLandmarker.createFromOptions(vision, options);
-  } catch (gpuError) {
-    console.warn("MediaPipe GPU delegate unavailable; using CPU.", gpuError);
-    delegate = "CPU";
-    landmarker = await HandLandmarker.createFromOptions(vision, {
-      ...options,
-      baseOptions: { ...options.baseOptions, delegate: "CPU" },
-    });
+function setModelProgress(progress, label, visible = cameraStartPending) {
+  const safeProgress = Math.max(0, Math.min(100, progress));
+  trackerProgress = safeProgress;
+  trackerProgressLabel = label;
+  ui.modelProgress.hidden = !visible;
+  ui.modelProgressBar.style.width = `${safeProgress}%`;
+  ui.modelProgress.setAttribute("aria-valuenow", String(safeProgress));
+  ui.modelProgressText.textContent = label;
+}
+
+function trackerStatusLabel(stage) {
+  if (stage === "runtime") return "تحميل محرّك MediaPipe…";
+  if (stage === "model") return "تحميل نموذج اليد…";
+  if (stage === "compile") return "تجهيز التتبع على جهازك…";
+  if (stage === "fallback") return "تشغيل وضع التوافق…";
+  return "تجهيز تتبع اليد…";
+}
+
+function trackerErrorMessage(message) {
+  if (message.includes("Deployment Protection") || message.includes("HTTP 401") || message.includes("HTTP 302")) {
+    return "تعذّر تحميل نموذج اليد بسبب حماية Vercel. استخدم رابط Production العام أو عطّل الحماية عنه.";
   }
-  ui.engineBadge.textContent = `MediaPipe · ${delegate}`;
-  return landmarker;
+  if (message.includes("timed out")) {
+    return "استغرق تحميل نموذج اليد وقتًا طويلًا. تحقق من الاتصال ثم أعد المحاولة.";
+  }
+  return "تعذّر تجهيز تتبع اليد. أعد تحميل الصفحة أو جرّب متصفحًا حديثًا.";
+}
+
+function destroyTrackerWorker() {
+  trackerWorker?.terminate();
+  trackerWorker = null;
+  trackerReadyPromise = null;
+  trackerReady = false;
+  trackerProgress = 0;
+  trackerProgressLabel = "بدء التحميل…";
+  frameGate.reset();
+}
+
+function ensureTrackerReady() {
+  if (trackerReady) return Promise.resolve();
+  if (trackerReadyPromise) return trackerReadyPromise;
+  if (typeof Worker === "undefined" || typeof createImageBitmap === "undefined") {
+    return Promise.reject(new Error("This browser does not support the required worker APIs."));
+  }
+
+  ui.engineBadge.textContent = "MediaPipe · تجهيز";
+  trackerWorker = new Worker(new URL("./hand-tracking-worker.js", import.meta.url), { type: "module" });
+  trackerReadyPromise = new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      destroyTrackerWorker();
+      reject(new Error("MediaPipe initialization timed out."));
+    }, TRACKER_TIMEOUT_MS);
+
+    trackerWorker.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message.type === "status") {
+        ui.engineBadge.textContent = `MediaPipe · ${message.progress}%`;
+        setModelProgress(message.progress, trackerStatusLabel(message.stage));
+        return;
+      }
+      if (message.type === "ready") {
+        window.clearTimeout(timeout);
+        trackerReady = true;
+        delegate = message.delegate;
+        trackerInitializationMs = message.initializationMs;
+        ui.engineBadge.textContent = `MediaPipe · ${delegate}`;
+        setModelProgress(100, "تتبع اليد جاهز", cameraStartPending);
+        resolve();
+        return;
+      }
+      if (message.type === "fatal") {
+        window.clearTimeout(timeout);
+        const error = new Error(message.message);
+        destroyTrackerWorker();
+        reject(error);
+        return;
+      }
+      if (message.type === "result") {
+        frameGate.complete();
+        if (!running || message.sessionId !== trackingSessionId) return;
+        latestInferenceMs = message.inferenceMs;
+        processResults(message, message.timestampMs);
+        return;
+      }
+      if (message.type === "frame-error") {
+        frameGate.complete();
+        if (!running || message.sessionId !== trackingSessionId) return;
+        console.error("Hand tracking frame failed", message.message);
+        setStatus("خطأ في التتبع", "error");
+      }
+    });
+
+    trackerWorker.addEventListener("error", (event) => {
+      window.clearTimeout(timeout);
+      const error = new Error(event.message || "Hand tracking worker failed.");
+      destroyTrackerWorker();
+      reject(error);
+    }, { once: true });
+  });
+  return trackerReadyPromise;
 }
 
 function cameraErrorMessage(error) {
@@ -154,28 +248,41 @@ async function startCamera() {
     showToast("هذا المتصفح لا يدعم الوصول إلى الكاميرا.", true);
     return;
   }
+  cameraStartPending = true;
   ui.startButton.disabled = true;
   ui.startButton.lastChild.textContent = " جارٍ التجهيز…";
-  setStatus("تحميل النموذج…", "loading");
+  setStatus(trackerReady ? "فتح الكاميرا…" : "تجهيز تتبع اليد…", "loading");
+  setModelProgress(
+    trackerReady ? 100 : Math.max(2, trackerProgress),
+    trackerReady ? "تتبع اليد جاهز" : trackerProgressLabel,
+    !trackerReady,
+  );
 
   try {
-    const modelPromise = createLandmarker();
+    // Attach the rejection handler immediately while camera permission is pending.
+    const trackerOutcome = ensureTrackerReady().then(
+      () => ({ error: null }),
+      (error) => ({ error }),
+    );
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         facingMode: "user",
         width: { ideal: 1280 },
         height: { ideal: 720 },
-        frameRate: { ideal: 30, max: 60 },
+        frameRate: { ideal: 30, max: 30 },
       },
     });
     ui.video.srcObject = stream;
     await waitForVideoMetadata();
     await ui.video.play();
-    await modelPromise;
+    const { error: trackerError } = await trackerOutcome;
+    if (trackerError) throw trackerError;
     resizeCanvases();
     resetTracking();
     running = true;
+    trackingSessionId += 1;
+    frameGate.reset();
     lastVideoTime = -1;
     ui.emptyState.classList.add("is-hidden");
     ui.controlDock.classList.add("is-visible");
@@ -185,11 +292,14 @@ async function startCamera() {
   } catch (error) {
     console.error(error);
     stopCamera(false);
-    const message = cameraErrorMessage(error);
+    const isCameraError = ["NotAllowedError", "NotFoundError", "NotReadableError", "OverconstrainedError"].includes(error?.name);
+    const message = isCameraError ? cameraErrorMessage(error) : trackerErrorMessage(error?.message ?? String(error));
     setStatus("تعذر التشغيل", "error");
     ui.supportNote.textContent = message;
     showToast(message, true);
   } finally {
+    cameraStartPending = false;
+    window.setTimeout(() => { ui.modelProgress.hidden = true; }, 350);
     ui.startButton.disabled = false;
     ui.startButton.lastChild.textContent = " تشغيل الكاميرا";
   }
@@ -197,6 +307,8 @@ async function startCamera() {
 
 function stopCamera(updateStatus = true) {
   running = false;
+  trackingSessionId += 1;
+  frameGate.reset();
   if (animationFrame !== null) cancelAnimationFrame(animationFrame);
   animationFrame = null;
   stream?.getTracks().forEach((track) => track.stop());
@@ -211,11 +323,16 @@ function stopCamera(updateStatus = true) {
 }
 
 function resetTracking() {
+  resetHandState();
+  frameTimes.length = 0;
+  latestInferenceMs = null;
+}
+
+function resetHandState() {
   smoother.reset();
   gestures.reset();
   strokes.reset();
   resetDwell();
-  frameTimes.length = 0;
   setMode(GestureMode.IDLE);
 }
 
@@ -368,11 +485,20 @@ function updateFrameRate(timestampMs) {
   return frameTimes.length > 1 ? ((frameTimes.length - 1) * 1000) / (frameTimes.at(-1) - frameTimes[0]) : 0;
 }
 
+function renderDiagnostics(fps, rawMode, stableMode) {
+  if (!showDiagnostics) return;
+  const inference = latestInferenceMs === null ? "--" : `${latestInferenceMs.toFixed(1)} ms`;
+  const initialization = trackerInitializationMs === null ? "--" : `${trackerInitializationMs} ms`;
+  ui.diagnostics.textContent = `Inference: ${fps.toFixed(1)} FPS (${inference})\nWorker: active · ${delegate}\nGesture: ${rawMode} → ${stableMode}\nInference size: ${INFERENCE_WIDTH}×${INFERENCE_HEIGHT}\nCamera: ${ui.video.videoWidth}×${ui.video.videoHeight}\nCold start: ${initialization}`;
+}
+
 function processResults(result, timestampMs) {
   overlayContext.clearRect(0, 0, ui.overlayCanvas.width, ui.overlayCanvas.height);
+  const fps = updateFrameRate(timestampMs);
   const landmarks = result.landmarks?.[0];
   if (!landmarks) {
-    resetTracking();
+    resetHandState();
+    renderDiagnostics(fps, GestureMode.IDLE, GestureMode.IDLE);
     return;
   }
 
@@ -398,23 +524,36 @@ function processResults(result, timestampMs) {
   }
   drawCursor(canvasPoint, stableMode);
 
-  const fps = updateFrameRate(timestampMs);
-  if (showDiagnostics) {
-    ui.diagnostics.textContent = `Inference: ${fps.toFixed(1)} FPS\nDelegate: ${delegate}\nGesture: ${rawMode} → ${stableMode}\nResolution: ${ui.video.videoWidth}×${ui.video.videoHeight}`;
+  renderDiagnostics(fps, rawMode, stableMode);
+}
+
+async function submitInferenceFrame(timestampMs, sessionId) {
+  try {
+    captureContext.drawImage(ui.video, 0, 0, INFERENCE_WIDTH, INFERENCE_HEIGHT);
+    const frame = await createImageBitmap(captureCanvas);
+    if (!running || sessionId !== trackingSessionId || !trackerWorker) {
+      frame.close();
+      frameGate.complete();
+      return;
+    }
+    trackerWorker.postMessage({ type: "frame", frame, timestampMs, sessionId }, [frame]);
+  } catch (error) {
+    frameGate.complete();
+    console.error("Hand tracking frame failed", error);
+    setStatus("خطأ في التتبع", "error");
   }
 }
 
 function renderLoop(timestampMs) {
   if (!running) return;
-  try {
-    if (ui.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && ui.video.currentTime !== lastVideoTime) {
-      lastVideoTime = ui.video.currentTime;
-      const result = landmarker.detectForVideo(ui.video, timestampMs);
-      processResults(result, timestampMs);
-    }
-  } catch (error) {
-    console.error("Hand tracking frame failed", error);
-    setStatus("خطأ في التتبع", "error");
+  if (
+    trackerReady &&
+    ui.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    ui.video.currentTime !== lastVideoTime &&
+    frameGate.tryStart(timestampMs)
+  ) {
+    lastVideoTime = ui.video.currentTime;
+    void submitInferenceFrame(timestampMs, trackingSessionId);
   }
   animationFrame = requestAnimationFrame(renderLoop);
 }
@@ -459,8 +598,22 @@ ui.controlDock.addEventListener("click", (event) => {
   const target = event.target.closest("[data-air-action]");
   if (target) activateTool(target);
 });
-window.addEventListener("beforeunload", () => stopCamera(false));
+window.addEventListener("beforeunload", () => {
+  stopCamera(false);
+  trackerWorker?.postMessage({ type: "close" });
+  trackerWorker?.terminate();
+});
 
 if (!window.isSecureContext && location.hostname !== "localhost") {
   ui.supportNote.textContent = "الكاميرا تحتاج اتصال HTTPS آمن";
 }
+
+const preloadTracker = () => {
+  ensureTrackerReady().catch((error) => {
+    console.warn("MediaPipe preload failed; it will be retried when the camera starts.", error);
+    ui.engineBadge.textContent = "MediaPipe · إعادة المحاولة";
+  });
+};
+
+if ("requestIdleCallback" in window) window.requestIdleCallback(preloadTracker, { timeout: 750 });
+else window.setTimeout(preloadTracker, 100);
